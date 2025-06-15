@@ -1,153 +1,108 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import useApi from '../hooks/useApi';
+import useForm from '../hooks/useForm';
 
 /**
- * Home page - the entry point to the game
- * Allows the player to enter a nickname, choose a category and start a game
- * Loads the list of categories from the server dynamically
- *
- * @param {function} showError Function to display global errors
+ * Home page - עם Custom Hooks
+ * משתמש ב-useApi לקריאות שרת ו-useForm לניהול הטופס
  */
 function HomePage({ showError }) {
     const navigate = useNavigate();
+    const api = useApi();
 
-    // Form State
-    const [nickname, setNickname] = useState('');
-    const [selectedCategory, setSelectedCategory] = useState('');
+    // State עבור קטגוריות ומצב המערכת
     const [categories, setCategories] = useState([]);
-
-    // loading and errors state
-    const [loading, setLoading] = useState(true);
-    const [submitting, setSubmitting] = useState(false);
-    const [validationErrors, setValidationErrors] = useState({});
     const [systemStatus, setSystemStatus] = useState({
         isReady: false,
         error: null,
-        details: null
+        details: null,
+        canRetry: true
     });
 
-    /**
-     * Loads the category list from the server on page load
-     * and on each page refresh as required by the assignment
-     */
-    useEffect(() => {
-        loadSystemData();
-    }, []);
-
-    /**
-     * Comprehensive system check - checks server, words file, and categories
-     */
-    const loadSystemData = async () => {
-        try {
-            setLoading(true);
-            setSystemStatus({ isReady: false, error: null, details: null });
-
-            // Step 1: Check if server is running
-            let response;
-            try {
-                response = await fetch('http://localhost:8080/api/words/health');
-            } catch (networkError) {
-                throw new Error('SERVER_DOWN');
-            }
-
-            // Step 2: Check word system health
-            if (!response.ok) {
-                if (response.status === 503) {
-                    // Service unavailable - word system not ready
-                    try {
-                        const healthData = await response.json();
-                        throw new Error(`WORD_SYSTEM_ERROR: ${healthData.message || 'Word system not ready'}`);
-                    } catch (jsonError) {
-                        throw new Error('WORD_SYSTEM_ERROR: Word system not ready');
-                    }
-                } else {
-                    throw new Error(`SERVER_ERROR: HTTP ${response.status}`);
+    // הגדרת חוקי אימות לטופס
+    const validationRules = {
+        nickname: {
+            required: true,
+            requiredMessage: 'Please enter a nickname',
+            minLength: 2,
+            minLengthMessage: 'The nickname must contain at least 2 characters',
+            maxLength: 20,
+            maxLengthMessage: 'The nickname cannot contain more than 20 characters',
+            pattern: /^[a-zA-Z]+$/,
+            patternMessage: 'The nickname can only contain English letters (a-z, A-Z) - no numbers, spaces, or special characters',
+            custom: (value) => {
+                if (!value || value.trim().length === 0) {
+                    return 'Nickname is required';
                 }
-            }
 
-            // Step 3: Get categories
-            let categoriesResponse;
-            try {
-                categoriesResponse = await fetch('http://localhost:8080/api/words/categories');
-            } catch (networkError) {
-                throw new Error('CATEGORIES_FETCH_ERROR');
-            }
+                const trimmedValue = value.trim();
 
-            if (!categoriesResponse.ok) {
-                if (categoriesResponse.status === 500) {
-                    throw new Error('NO_WORDS_FILE');
-                } else {
-                    throw new Error(`CATEGORIES_ERROR: HTTP ${categoriesResponse.status}`);
+                if (trimmedValue.length < 2) {
+                    return 'Nickname must be at least 2 characters';
                 }
+
+                // בדיקה שיש רק אותיות אנגליות
+                if (!/^[a-zA-Z]+$/.test(trimmedValue)) {
+                    return 'Nickname can only contain English letters (a-z, A-Z). No numbers, spaces, Hebrew letters, or special characters allowed.';
+                }
+
+                return null;
             }
-
-            const categoriesData = await categoriesResponse.json();
-
-            // Step 4: Validate categories data
-            if (!Array.isArray(categoriesData)) {
-                throw new Error('INVALID_CATEGORIES_DATA');
+        },
+        selectedCategory: {
+            required: true,
+            requiredMessage: 'Please select a category',
+            custom: (value) => {
+                if (!value || value === '') {
+                    return 'You must choose a category';
+                }
+                return null;
             }
-
-            if (categoriesData.length === 0) {
-                throw new Error('NO_CATEGORIES');
-            }
-
-            // Success! System is ready
-            setCategories(categoriesData);
-            setSelectedCategory(categoriesData[0]);
-            setSystemStatus({
-                isReady: true,
-                error: null,
-                details: null
-            });
-
-        } catch (error) {
-            console.error('System check error:', error);
-            handleSystemError(error.message);
-        } finally {
-            setLoading(false);
         }
     };
 
+    // שימוש ב-useForm Custom Hook
+    const {
+        values,
+        errors,
+        handleChange,
+        handleBlur,
+        validate,
+        reset: resetForm,
+        isFieldInvalid
+    } = useForm({
+        nickname: '',
+        selectedCategory: ''
+    }, validationRules);
+
     /**
-     * Handle different types of system errors with specific messages
+     * טיפול בשגיאות מערכת
      */
-    const handleSystemError = (errorMessage) => {
+    const handleSystemError = useCallback((errorMessage) => {
         let userMessage = '';
         let details = '';
         let canRetry = true;
 
-        if (errorMessage === 'SERVER_DOWN') {
+        if (errorMessage.includes('fetch') || errorMessage.includes('NetworkError')) {
             userMessage = 'Server is not responding';
-            details = 'Please make sure the server is running.';
+            details = 'Please make sure the server is running on http://localhost:8080';
             canRetry = true;
-        } else if (errorMessage.startsWith('WORD_SYSTEM_ERROR')) {
-            userMessage = 'Word system is not ready';
-            details = 'The words file is missing or empty.';
-            canRetry = false;
-        } else if (errorMessage === 'NO_WORDS_FILE') {
-            userMessage = 'Word system is not ready';
-            details = 'The words file is missing or empty.';
-            canRetry = false;
         } else if (errorMessage === 'NO_CATEGORIES') {
             userMessage = 'Word system is not ready';
+            details = 'The words file is missing or empty. Please run the WordInit program first.';
+            canRetry = false;
+        } else if (errorMessage.includes('HTTP 503')) {
+            userMessage = 'Word system is not ready';
             details = 'The words file is missing or empty.';
             canRetry = false;
-        } else if (errorMessage === 'CATEGORIES_FETCH_ERROR') {
-            userMessage = 'Cannot load word categories';
-            details = 'Network error while fetching categories. Please check your connection.';
-            canRetry = true;
-        } else if (errorMessage === 'INVALID_CATEGORIES_DATA') {
-            userMessage = 'Invalid categories data received';
-            details = 'The server returned invalid data. This might indicate a server-side issue.';
-            canRetry = true;
-        } else if (errorMessage.startsWith('SERVER_ERROR')) {
-            userMessage = 'Server error occurred';
-            details = `The server returned an error: ${errorMessage}. Please try again later.`;
+        } else if (errorMessage.includes('HTTP 500')) {
+            userMessage = 'Server error';
+            details = 'Internal server error. Please contact the administrator.';
             canRetry = true;
         } else {
-            userMessage = 'Unknown system error';
-            details = `Unexpected error: ${errorMessage}. Please contact support.`;
+            userMessage = 'System error occurred';
+            details = `Error: ${errorMessage}. Please try again later.`;
             canRetry = true;
         }
 
@@ -157,93 +112,147 @@ function HomePage({ showError }) {
             details: details,
             canRetry: canRetry
         });
-    };
+    }, []);
 
     /**
-     * Validate form data
-     * @returns {boolean} true if everything is correct
+     * טעינת נתוני המערכת עם useApi
      */
-    const validateForm = () => {
-        const errors = {};
+    const loadSystemData = useCallback(async () => {
+        try {
+            setSystemStatus({ isReady: false, error: null, details: null, canRetry: true });
 
-        // Nickname check
-        if (!nickname.trim()) {
-            errors.nickname = 'Please enter a nickname';
-        } else if (nickname.trim().length < 2) {
-            errors.nickname = 'The nickname must contain at least 2 characters.';
-        } else if (nickname.trim().length > 20) {
-            errors.nickname = 'The nickname cannot contain more than 20 characters.';
-        } else if (!/^[a-zA-Z0-9\s]+$/.test(nickname.trim())) {
-            errors.nickname = 'The nickname can only contain letters, numbers, and spaces.';
+            // בדיקת בריאות המערכת
+            await api.get('http://localhost:8080/api/words/health');
+
+            // טעינת קטגוריות
+            const categoriesData = await api.get('http://localhost:8080/api/words/categories');
+
+            if (!Array.isArray(categoriesData) || categoriesData.length === 0) {
+                throw new Error('NO_CATEGORIES');
+            }
+
+            // הצלחה!
+            setCategories(categoriesData);
+            handleChange('selectedCategory', categoriesData[0]);
+            setSystemStatus({
+                isReady: true,
+                error: null,
+                details: null,
+                canRetry: true
+            });
+
+        } catch (error) {
+            console.error('System check error:', error);
+            handleSystemError(error.message);
         }
-
-        // Category check
-        if (!selectedCategory) {
-            errors.category = 'Please select a category';
-        }
-
-        setValidationErrors(errors);
-        return Object.keys(errors).length === 0;
-    };
-
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [api.get, handleChange, handleSystemError]);
     /**
-     * Handling the form submission and starting the game
+     * טיפול בשליחת הטופס והתחלת משחק
      */
     const handleStartGame = async (e) => {
         e.preventDefault();
 
-        // Reset previous errors
-        setValidationErrors({});
+        // אימות הטופס - חובה לעצור אם יש שגיאות
+        const isFormValid = validate();
 
-        // Validation
-        if (!validateForm()) {
+        console.log('Form validation result:', isFormValid);
+        console.log('Form values:', values);
+        console.log('Form errors:', errors);
+
+        if (!isFormValid) {
+            console.log('Form validation failed - not proceeding to game');
+            // הצגת הודעת שגיאה נוספת למשתמש
+            if (errors.nickname) {
+                showError(`Nickname error: ${errors.nickname}`);
+            } else if (errors.selectedCategory) {
+                showError(`Category error: ${errors.selectedCategory}`);
+            } else {
+                showError('Please fix the form errors before starting the game');
+            }
+            return; // עוצרים כאן אם יש שגיאות
+        }
+
+        // בדיקות נוספות שהערכים אכן תקינים
+        const trimmedNickname = values.nickname.trim();
+
+        if (!trimmedNickname) {
+            showError('Please enter a valid nickname');
             return;
         }
 
+        if (trimmedNickname.length < 2) {
+            showError('Nickname must be at least 2 characters');
+            return;
+        }
+
+        if (!/^[a-zA-Z]+$/.test(trimmedNickname)) {
+            showError('Nickname can only contain English letters (a-z, A-Z). No numbers, spaces, Hebrew letters, or special characters allowed.');
+            return;
+        }
+
+        if (!values.selectedCategory) {
+            showError('Please select a category');
+            return;
+        }
+
+        console.log('All validations passed - proceeding to game');
+
         try {
-            setSubmitting(true);
+            // בדיקה אחרונה של המערכת
+            await api.get('http://localhost:8080/api/words/health');
 
-            // Final system check before starting game
-            const healthResponse = await fetch('http://localhost:8080/api/words/health');
-            if (!healthResponse.ok) {
-                throw new Error('System became unavailable. Please refresh the page.');
+            // שליפת מילה אקראית
+            const randomWord = await api.get(
+                `http://localhost:8080/api/words/random/${values.selectedCategory}`
+            );
+
+            // וידוא שקיבלנו מילה תקינה
+            if (!randomWord || !randomWord.word) {
+                throw new Error('No word received from server');
             }
 
-            // Attempt to draw a word from the selected category
-            const wordResponse = await fetch(`http://localhost:8080/api/words/random/${selectedCategory}`);
-            if (!wordResponse.ok) {
-                if (wordResponse.status === 404) {
-                    throw new Error(`The category "${selectedCategory}" is empty or no longer exists.`);
-                }
-                throw new Error('Unable to draw a word at the moment. Please try again.');
-            }
+            console.log('Starting game with:', {
+                nickname: trimmedNickname,
+                category: values.selectedCategory,
+                word: randomWord.word
+            });
 
-            const randomWord = await wordResponse.json();
-
-            // Go to the game page with the data
+            // מעבר לדף המשחק רק אם הכל תקין
             navigate('/game', {
                 state: {
-                    nickname: nickname.trim(),
-                    category: selectedCategory,
+                    nickname: trimmedNickname,
+                    category: values.selectedCategory,
                     word: randomWord.word,
                     hint: randomWord.hint
                 }
             });
 
         } catch (error) {
-            console.error('Error starting the game:', error);
-            showError(`Unable to start the game: ${error.message}`);
-        } finally {
-            setSubmitting(false);
+            console.error('Error starting game:', error);
+
+            if (error.message.includes('404')) {
+                showError(`The category "${values.selectedCategory}" is empty or no longer exists.`);
+            } else {
+                showError(`Unable to start the game: ${error.message}`);
+            }
         }
     };
 
-    /**
-     * Refresh the system data (refresh button)
-     */
     const handleRefreshSystem = () => {
-        loadSystemData();
+        api.clearError();
+        resetForm();
+        loadSystemData().catch(error => {
+            console.error('Error refreshing system:', error);
+        });
     };
+
+    // טעינת נתונים ראשונית
+    useEffect(() => {
+        loadSystemData().catch(error => {
+            console.error('Error loading system data:', error);
+        });
+    }, [loadSystemData]);
 
     return (
         <div className="container py-5">
@@ -270,8 +279,8 @@ function HomePage({ showError }) {
                         </div>
                         <div className="card-body bg-light">
 
-                            {loading ? (
-                                // Loading screen
+                            {api.loading ? (
+                                // מסך טעינה
                                 <div className="text-center py-4">
                                     <div className="spinner-border text-success" role="status">
                                         <span className="visually-hidden">Loading...</span>
@@ -279,7 +288,7 @@ function HomePage({ showError }) {
                                     <p className="mt-3">Checking system status...</p>
                                 </div>
                             ) : !systemStatus.isReady ? (
-                                // System error screen
+                                // מסך שגיאת מערכת
                                 <div className="text-center py-4">
                                     <div className="alert alert-danger">
                                         <h5 className="alert-heading">
@@ -293,6 +302,7 @@ function HomePage({ showError }) {
                                                 type="button"
                                                 className="btn btn-outline-danger"
                                                 onClick={handleRefreshSystem}
+                                                disabled={api.loading}
                                             >
                                                 <i className="bi bi-arrow-clockwise me-2"></i>
                                                 Try Again
@@ -309,10 +319,10 @@ function HomePage({ showError }) {
                                     </div>
                                 </div>
                             ) : (
-                                // Game form - only shown when system is ready
+                                // טופס המשחק
                                 <form onSubmit={handleStartGame}>
 
-                                    {/* Player nickname */}
+                                    {/* כינוי שחקן */}
                                     <div className="mb-4">
                                         <label htmlFor="nickname" className="form-label fw-bold text-dark">
                                             <i className="bi bi-person me-2"></i>
@@ -320,25 +330,27 @@ function HomePage({ showError }) {
                                         </label>
                                         <input
                                             type="text"
-                                            className={`form-control ${validationErrors.nickname ? 'is-invalid' : ''}`}
+                                            className={`form-control ${isFieldInvalid('nickname') ? 'is-invalid' : ''}`}
                                             id="nickname"
-                                            value={nickname}
-                                            onChange={(e) => setNickname(e.target.value)}
+                                            value={values.nickname}
+                                            onChange={(e) => handleChange('nickname', e.target.value)}
+                                            onBlur={() => handleBlur('nickname')}
                                             placeholder="Enter your nickname..."
                                             maxLength={20}
-                                            disabled={submitting}
+                                            disabled={api.loading}
+                                            autoComplete="off"
                                         />
-                                        {validationErrors.nickname && (
+                                        {errors.nickname && (
                                             <div className="invalid-feedback">
-                                                {validationErrors.nickname}
+                                                {errors.nickname}
                                             </div>
                                         )}
                                         <div className="form-text">
-                                            Your nickname will appear on the leaderboard (2-20 characters)
+                                            Only English letters allowed (a-z, A-Z) - 2-20 characters
                                         </div>
                                     </div>
 
-                                    {/* Category selection */}
+                                    {/* בחירת קטגוריה */}
                                     <div className="mb-4">
                                         <label htmlFor="category" className="form-label fw-bold text-dark">
                                             <i className="bi bi-tags me-2"></i>
@@ -346,11 +358,12 @@ function HomePage({ showError }) {
                                         </label>
                                         <div className="input-group">
                                             <select
-                                                className={`form-select ${validationErrors.category ? 'is-invalid' : ''}`}
+                                                className={`form-select ${isFieldInvalid('selectedCategory') ? 'is-invalid' : ''}`}
                                                 id="category"
-                                                value={selectedCategory}
-                                                onChange={(e) => setSelectedCategory(e.target.value)}
-                                                disabled={submitting}
+                                                value={values.selectedCategory}
+                                                onChange={(e) => handleChange('selectedCategory', e.target.value)}
+                                                onBlur={() => handleBlur('selectedCategory')}
+                                                disabled={api.loading}
                                             >
                                                 <option value="">Choose category...</option>
                                                 {categories.map((category) => (
@@ -360,33 +373,33 @@ function HomePage({ showError }) {
                                                 ))}
                                             </select>
 
-                                            {/* Refresh button */}
+                                            {/* כפתור רענון */}
                                             <button
                                                 type="button"
                                                 className="btn btn-outline-success"
                                                 onClick={handleRefreshSystem}
-                                                disabled={submitting}
+                                                disabled={api.loading}
                                                 title="Refresh categories"
                                             >
                                                 <i className="bi bi-arrow-clockwise"></i>
                                             </button>
                                         </div>
 
-                                        {validationErrors.category && (
+                                        {errors.selectedCategory && (
                                             <div className="invalid-feedback d-block">
-                                                {validationErrors.category}
+                                                {errors.selectedCategory}
                                             </div>
                                         )}
                                     </div>
 
-                                    {/* Start game button */}
+                                    {/* כפתור התחלת משחק */}
                                     <div className="d-grid">
                                         <button
                                             type="submit"
                                             className="btn btn-success btn-lg"
-                                            disabled={submitting}
+                                            disabled={api.loading}
                                         >
-                                            {submitting ? (
+                                            {api.loading ? (
                                                 <>
                                                     <span className="spinner-border spinner-border-sm me-2" role="status">
                                                         <span className="visually-hidden">Loading...</span>
@@ -400,6 +413,14 @@ function HomePage({ showError }) {
                                                 </>
                                             )}
                                         </button>
+
+                                        {/* הצגת שגיאות כלליות אם יש */}
+                                        {(errors.nickname || errors.selectedCategory) && (
+                                            <div className="alert alert-danger mt-3 mb-0">
+                                                <i className="bi bi-exclamation-triangle me-2"></i>
+                                                <strong>Cannot start game:</strong> Please fix the errors above.
+                                            </div>
+                                        )}
                                     </div>
                                 </form>
                             )}

@@ -1,153 +1,177 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import ConfirmModal from '../components/modals/ConfirmModal';
 import SuccessModal from '../components/modals/SuccessModal';
+import useApi from '../hooks/useApi';
+import useForm from '../hooks/useForm';
 
+/**
+ * Words management page - עם Custom Hooks
+ * משתמש ב-useApi לקריאות שרת ו-useForm לניהול טפסים
+ */
 function WordsPage({ showError }) {
+    const api = useApi();
+
+    // State עבור רשימת מילים וקטגוריות
     const [words, setWords] = useState([]);
-    const [loading, setLoading] = useState(true);
-    const [refreshing, setRefreshing] = useState(false);
-    const [showAddForm, setShowAddForm] = useState(false);
+    const [categories, setCategories] = useState([]);
     const [editingWord, setEditingWord] = useState(null);
-    const [formData, setFormData] = useState({ category: '', word: '', hint: '' });
-    const [submitting, setSubmitting] = useState(false);
-    const [formErrors, setFormErrors] = useState({});
+
+    // State עבור UI
+    const [showAddForm, setShowAddForm] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
     const [selectedCategory, setSelectedCategory] = useState('all');
-    const [categories, setCategories] = useState([]);
     const [wordToDelete, setWordToDelete] = useState(null);
     const [showSuccessModal, setShowSuccessModal] = useState(false);
     const [successMessage, setSuccessMessage] = useState('');
 
-    const loadWords = async (showLoader = true) => {
-        try {
-            if (showLoader) setLoading(true);
-            else setRefreshing(true);
+    // הגדרת חוקי אימות לטופס המילים
+    const validationRules = {
+        category: {
+            required: true,
+            requiredMessage: 'Category is required.',
+            pattern: /^[a-zA-Z]+$/,
+            patternMessage: 'Only English letters allowed.'
+        },
+        word: {
+            required: true,
+            requiredMessage: 'Word is required.',
+            pattern: /^[a-zA-Z]+$/,
+            patternMessage: 'Only English letters allowed.',
+            custom: (value, formValues) => {
+                // בדיקה שהמילה לא קיימת כבר
+                const existingWord = words.find(w =>
+                    w.category.toLowerCase() === formValues.category.toLowerCase() &&
+                    w.word.toLowerCase() === value.toLowerCase()
+                );
 
-            const response = await fetch('http://localhost:8080/api/words');
-            if (!response.ok) throw new Error('Unable to load word list.');
-            const data = await response.json();
+                if (existingWord &&
+                    (!editingWord ||
+                        existingWord.category !== editingWord.category ||
+                        existingWord.word !== editingWord.word)) {
+                    return 'The word already exists in the database.';
+                }
+                return null;
+            }
+        },
+        hint: {
+            required: true,
+            requiredMessage: 'Hint is required.',
+            minLength: 3,
+            minLengthMessage: 'Hint must be at least 3 characters.'
+        }
+    };
+
+    // שימוש ב-useForm Custom Hook
+    const {
+        values: formData,
+        errors: formErrors,
+        handleChange,
+        handleBlur,
+        validate,
+        reset: resetForm,
+        setFormValues,
+        isFieldInvalid
+    } = useForm({
+        category: '',
+        word: '',
+        hint: ''
+    }, validationRules);
+
+    /**
+     * טעינת מילים עם useApi
+     */
+    const loadWords = useCallback(async (showLoader = true) => {
+        try {
+            const data = await api.get('http://localhost:8080/api/words');
             setWords(data);
+
+            // חילוץ קטגוריות ייחודיות
             const uniqueCategories = [...new Set(data.map(word => word.category))];
             setCategories(uniqueCategories.sort());
+
         } catch (error) {
             console.error('Error loading words:', error);
             showError('Unable to load word list. Please check the connection to the server.');
-        } finally {
-            setLoading(false);
-            setRefreshing(false);
         }
-    };
+    }, [api.get, showError]);
 
-    useEffect(() => { loadWords(); }, []);
+    // טעינה ראשונית
+    useEffect(() => {
+        loadWords();
+    }, [loadWords]);
 
-    const validateForm = () => {
-        const errors = {};
-        if (!formData.category.trim()) errors.category = 'Category is required.';
-        else if (!/^[a-zA-Z]+$/.test(formData.category.trim())) errors.category = 'Only English letters allowed.';
-        if (!formData.word.trim()) errors.word = 'Word is required.';
-        else if (!/^[a-zA-Z]+$/.test(formData.word.trim())) errors.word = 'Only English letters allowed.';
-        if (!formData.hint.trim()) errors.hint = 'Hint is required.';
-        else if (formData.hint.trim().length < 3) errors.hint = 'Hint must be at least 3 characters.';
+    /**
+     * פונקציה עזר להצגת הודעות הצלחה
+     */
+    const showSuccessMessage = useCallback((message) => {
+        setSuccessMessage(message);
+        setShowSuccessModal(true);
+    }, []);
 
-        const existingWord = words.find(w => w.category.toLowerCase() === formData.category.toLowerCase() && w.word.toLowerCase() === formData.word.toLowerCase());
-        if (existingWord && (!editingWord || existingWord.category !== editingWord.category || existingWord.word !== editingWord.word)) {
-            errors.word = 'The word already exists in the database.';
-        }
-
-        setFormErrors(errors);
-        return Object.keys(errors).length === 0;
-    };
-
-    const resetForm = () => {
-        setFormData({ category: '', word: '', hint: '' });
-        setFormErrors({});
+    /**
+     * איפוס הטופס
+     */
+    const handleResetForm = () => {
+        resetForm();
         setEditingWord(null);
         setShowAddForm(false);
     };
 
-    // Helper function for showing success messages
-    const showSuccessMessage = (message) => {
-        setSuccessMessage(message);
-        setShowSuccessModal(true);
-    };
-
+    /**
+     * הוספת מילה חדשה
+     */
     const handleAddWord = async (e) => {
         e.preventDefault();
-        if (!validateForm()) return;
+
+        if (!validate()) return;
+
         try {
-            setSubmitting(true);
-            const response = await fetch('http://localhost:8080/api/words', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(formData),
-            });
-            if (!response.ok) throw new Error((await response.json()).error || 'The word cannot be added.');
+            await api.post('http://localhost:8080/api/words', formData);
             await loadWords(false);
-            setSuccessMessage('The word was added successfully!');
-            setShowSuccessModal(true);
-            resetForm();
+            showSuccessMessage('The word was added successfully!');
+            handleResetForm();
         } catch (error) {
             console.error('Error adding word:', error);
             showError(`The word cannot be added: ${error.message}`);
-        } finally {
-            setSubmitting(false);
         }
     };
 
     /**
-     * Edit an existing word
+     * עריכת מילה קיימת
      */
     const handleEditWord = async (e) => {
         e.preventDefault();
-        if (!validateForm() || !editingWord) return;
+
+        if (!validate() || !editingWord) return;
+
         try {
-            setSubmitting(true);
-            const response = await fetch(
+            await api.put(
                 `http://localhost:8080/api/words/${editingWord.category}/${editingWord.word}`,
-                {
-                    method: 'PUT',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(formData),
-                }
+                formData
             );
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'The word cannot be updated.');
-            }
             await loadWords(false);
-            resetForm();
+            handleResetForm();
             showSuccessMessage('The word has been updated successfully!');
         } catch (error) {
             console.error('Error updating word:', error);
             showError(`The word cannot be updated: ${error.message}`);
-        } finally {
-            setSubmitting(false);
         }
     };
 
+    /**
+     * מחיקת מילה
+     */
     const handleDeleteWord = (word) => {
         setWordToDelete(word);
     };
 
-    /**
-     * Delete a word
-     */
     const confirmDeleteWord = async () => {
         if (!wordToDelete) return;
-        try {
 
-            const response = await fetch(
-                `http://localhost:8080/api/words/${wordToDelete.category}/${wordToDelete.word}`,
-                {
-                    method: 'DELETE',
-                }
+        try {
+            await api.delete(
+                `http://localhost:8080/api/words/${wordToDelete.category}/${wordToDelete.word}`
             );
-            if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'The word cannot be deleted.');
-            }
             await loadWords(false);
             showSuccessMessage('The word was successfully deleted!');
         } catch (error) {
@@ -162,15 +186,25 @@ function WordsPage({ showError }) {
         setWordToDelete(null);
     };
 
+    /**
+     * תחילת עריכה
+     */
     const startEditing = (word) => {
         setEditingWord(word);
-        setFormData({ category: word.category, word: word.word, hint: word.hint });
-        setFormErrors({});
+        setFormValues({
+            category: word.category,
+            word: word.word,
+            hint: word.hint
+        });
         setShowAddForm(true);
     };
 
+    /**
+     * סינון מילים
+     */
     const filteredWords = words.filter(word => {
-        const matchesSearch = word.word.toLowerCase().includes(searchTerm.toLowerCase()) || word.hint.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesSearch = word.word.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            word.hint.toLowerCase().includes(searchTerm.toLowerCase());
         const matchesCategory = selectedCategory === 'all' || word.category === selectedCategory;
         return matchesSearch && matchesCategory;
     });
@@ -178,13 +212,13 @@ function WordsPage({ showError }) {
     return (
         <div className="container py-4">
 
-            {/* title */}
+            {/* כותרת */}
             <div className="row mb-4">
                 <div className="col-12">
                     <div className="d-flex justify-content-between align-items-center flex-wrap">
                         <h1 className="display-5 fw-bold text-primary">
                             <i className="bi bi-gear me-3"></i>
-                            word management
+                            Word Management
                         </h1>
 
                         <div className="btn-group" role="group">
@@ -194,14 +228,32 @@ function WordsPage({ showError }) {
                                 onClick={() => setShowAddForm(!showAddForm)}
                             >
                                 <i className="bi bi-plus-circle me-2"></i>
-                                {showAddForm ? 'cancellation' : 'add word'}
+                                {showAddForm ? 'Cancel' : 'Add Word'}
+                            </button>
+
+                            <button
+                                type="button"
+                                className="btn btn-outline-primary"
+                                onClick={() => {
+                                    loadWords(false).catch(error => {
+                                        console.error('Error refreshing words:', error);
+                                    });
+                                }}
+                                disabled={api.loading}
+                            >
+                                {api.loading ? (
+                                    <span className="spinner-border spinner-border-sm me-2" role="status"></span>
+                                ) : (
+                                    <i className="bi bi-arrow-clockwise me-2"></i>
+                                )}
+                                Refresh
                             </button>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Add/Edit Form */}
+            {/* טופס הוספה/עריכה */}
             {showAddForm && (
                 <div className="row mb-4">
                     <div className="col-12">
@@ -209,14 +261,14 @@ function WordsPage({ showError }) {
                             <div className="card-header bg-success text-white">
                                 <h5 className="card-title mb-0">
                                     <i className="bi bi-plus-circle me-2"></i>
-                                    {editingWord ? 'Editing a word' : 'Added a new word'}
+                                    {editingWord ? 'Edit Word' : 'Add New Word'}
                                 </h5>
                             </div>
                             <div className="card-body">
                                 <form onSubmit={editingWord ? handleEditWord : handleAddWord}>
                                     <div className="row g-3">
 
-                                        {/* category */}
+                                        {/* קטגוריה */}
                                         <div className="col-md-4">
                                             <label className="form-label fw-bold">
                                                 <i className="bi bi-tag me-2"></i>
@@ -224,12 +276,13 @@ function WordsPage({ showError }) {
                                             </label>
                                             <input
                                                 type="text"
-                                                className={`form-control ${formErrors.category ? 'is-invalid' : ''}`}
+                                                className={`form-control ${isFieldInvalid('category') ? 'is-invalid' : ''}`}
                                                 value={formData.category}
-                                                onChange={(e) => setFormData({...formData, category: e.target.value})}
+                                                onChange={(e) => handleChange('category', e.target.value)}
+                                                onBlur={() => handleBlur('category')}
                                                 placeholder="animals, colors, food..."
                                                 style={{direction: 'ltr'}}
-                                                disabled={submitting}
+                                                disabled={api.loading}
                                             />
                                             {formErrors.category && (
                                                 <div className="invalid-feedback">{formErrors.category}</div>
@@ -237,7 +290,7 @@ function WordsPage({ showError }) {
                                             <div className="form-text">Only English letters (a-z)</div>
                                         </div>
 
-                                        {/* word */}
+                                        {/* מילה */}
                                         <div className="col-md-4">
                                             <label className="form-label fw-bold">
                                                 <i className="bi bi-chat-quote me-2"></i>
@@ -245,12 +298,13 @@ function WordsPage({ showError }) {
                                             </label>
                                             <input
                                                 type="text"
-                                                className={`form-control ${formErrors.word ? 'is-invalid' : ''}`}
+                                                className={`form-control ${isFieldInvalid('word') ? 'is-invalid' : ''}`}
                                                 value={formData.word}
-                                                onChange={(e) => setFormData({...formData, word: e.target.value})}
+                                                onChange={(e) => handleChange('word', e.target.value)}
+                                                onBlur={() => handleBlur('word')}
                                                 placeholder="dog, cat, red..."
                                                 style={{direction: 'ltr'}}
-                                                disabled={submitting}
+                                                disabled={api.loading}
                                             />
                                             {formErrors.word && (
                                                 <div className="invalid-feedback">{formErrors.word}</div>
@@ -258,7 +312,7 @@ function WordsPage({ showError }) {
                                             <div className="form-text">Only English letters (a-z)</div>
                                         </div>
 
-                                        {/* Hint */}
+                                        {/* רמז */}
                                         <div className="col-md-4">
                                             <label className="form-label fw-bold">
                                                 <i className="bi bi-lightbulb me-2"></i>
@@ -266,11 +320,12 @@ function WordsPage({ showError }) {
                                             </label>
                                             <input
                                                 type="text"
-                                                className={`form-control ${formErrors.hint ? 'is-invalid' : ''}`}
+                                                className={`form-control ${isFieldInvalid('hint') ? 'is-invalid' : ''}`}
                                                 value={formData.hint}
-                                                onChange={(e) => setFormData({...formData, hint: e.target.value})}
+                                                onChange={(e) => handleChange('hint', e.target.value)}
+                                                onBlur={() => handleBlur('hint')}
                                                 placeholder="A loyal animal that barks..."
-                                                disabled={submitting}
+                                                disabled={api.loading}
                                             />
                                             {formErrors.hint && (
                                                 <div className="invalid-feedback">{formErrors.hint}</div>
@@ -279,31 +334,31 @@ function WordsPage({ showError }) {
                                         </div>
                                     </div>
 
-                                    {/* Action buttons */}
+                                    {/* כפתורי פעולה */}
                                     <div className="row mt-4">
                                         <div className="col-12">
                                             <div className="btn-group" role="group">
                                                 <button
                                                     type="submit"
                                                     className={`btn ${editingWord ? 'btn-warning' : 'btn-success'}`}
-                                                    disabled={submitting}
+                                                    disabled={api.loading}
                                                 >
-                                                    {submitting ? (
+                                                    {api.loading ? (
                                                         <span className="spinner-border spinner-border-sm me-2" role="status"></span>
                                                     ) : (
                                                         <i className={`bi ${editingWord ? 'bi-pencil' : 'bi-check-lg'} me-2`}></i>
                                                     )}
-                                                    {editingWord ? 'Update a word' : 'Add a word'}
+                                                    {editingWord ? 'Update Word' : 'Add Word'}
                                                 </button>
 
                                                 <button
                                                     type="button"
                                                     className="btn btn-secondary"
-                                                    onClick={resetForm}
-                                                    disabled={submitting}
+                                                    onClick={handleResetForm}
+                                                    disabled={api.loading}
                                                 >
                                                     <i className="bi bi-x-lg me-2"></i>
-                                                    cancellation
+                                                    Cancel
                                                 </button>
                                             </div>
                                         </div>
@@ -315,31 +370,41 @@ function WordsPage({ showError }) {
                 </div>
             )}
 
-            {/* Filter panel */}
+            {/* פאנל סינון */}
             <div className="row mb-4">
                 <div className="col-12">
                     <div className="card shadow-sm">
                         <div className="card-body">
                             <div className="row g-3 align-items-center">
 
-                                {/* Search */}
+                                {/* חיפוש */}
                                 <div className="col-md-6">
-                                    <label className="form-label fw-bold">Search for a word or clue:</label>
+                                    <label className="form-label fw-bold">Search for word or hint:</label>
                                     <div className="input-group">
-                    <span className="input-group-text">
-                      <i className="bi bi-search"></i>
-                    </span>
+                                        <span className="input-group-text">
+                                            <i className="bi bi-search"></i>
+                                        </span>
                                         <input
                                             type="text"
                                             className="form-control"
-                                            placeholder="Enter a word or search hint..."
+                                            placeholder="Enter word or hint to search..."
                                             value={searchTerm}
                                             onChange={(e) => setSearchTerm(e.target.value)}
                                         />
+                                        {searchTerm && (
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline-secondary"
+                                                onClick={() => setSearchTerm('')}
+                                                title="Clear search"
+                                            >
+                                                <i className="bi bi-x-lg"></i>
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 
-                                {/* Category */}
+                                {/* קטגוריה */}
                                 <div className="col-md-4">
                                     <label className="form-label fw-bold">Filter by category:</label>
                                     <select
@@ -347,11 +412,25 @@ function WordsPage({ showError }) {
                                         value={selectedCategory}
                                         onChange={(e) => setSelectedCategory(e.target.value)}
                                     >
-                                        <option value="all">All categories</option>
-                                        {categories.map(category => (
-                                            <option key={category} value={category}>{category}</option>
-                                        ))}
+                                        <option value="all">All categories ({categories.length})</option>
+                                        {categories.map(category => {
+                                            const count = words.filter(w => w.category === category).length;
+                                            return (
+                                                <option key={category} value={category}>
+                                                    {category} ({count})
+                                                </option>
+                                            );
+                                        })}
                                     </select>
+                                </div>
+
+                                {/* סטטיסטיקות */}
+                                <div className="col-md-2">
+                                    <label className="form-label fw-bold">Statistics:</label>
+                                    <div className="small text-muted">
+                                        <div><strong>{words.length}</strong> total words</div>
+                                        <div><strong>{filteredWords.length}</strong> showing</div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -359,22 +438,22 @@ function WordsPage({ showError }) {
                 </div>
             </div>
 
-            {/* Words List */}
+            {/* רשימת מילים */}
             <div className="row">
                 <div className="col-12">
-                    {loading ? (
-                        // loading screen
+                    {api.loading ? (
+                        // מסך טעינה
                         <div className="text-center py-5">
                             <div className="spinner-border text-primary mb-3" style={{width: '3rem', height: '3rem'}} role="status">
-                                <span className="visually-hidden">טוען...</span>
+                                <span className="visually-hidden">Loading...</span>
                             </div>
                             <h5>Loading words...</h5>
                         </div>
                     ) : filteredWords.length === 0 ? (
-                        // No results
+                        // אין תוצאות
                         <div className="text-center py-5">
                             <i className="bi bi-emoji-frown display-1 text-muted mb-3"></i>
-                            <h4 className="text-muted">There are no words for the show.</h4>
+                            <h4 className="text-muted">No words to display.</h4>
                             <p className="text-muted">
                                 {searchTerm || selectedCategory !== 'all'
                                     ? 'Try changing the filter or search.'
@@ -390,17 +469,17 @@ function WordsPage({ showError }) {
                             </button>
                         </div>
                     ) : (
-                        // words list
+                        // טבלת מילים
                         <div className="card shadow">
                             <div className="table-responsive">
                                 <table className="table table-hover mb-0">
                                     <thead className="table-primary">
                                     <tr>
-                                        <th scope="col">
+                                        <th scope="col" style={{width: '120px'}}>
                                             <i className="bi bi-tag me-2"></i>
                                             Category
                                         </th>
-                                        <th scope="col">
+                                        <th scope="col" style={{width: '150px'}}>
                                             <i className="bi bi-chat-quote me-2"></i>
                                             Word
                                         </th>
@@ -408,9 +487,9 @@ function WordsPage({ showError }) {
                                             <i className="bi bi-lightbulb me-2"></i>
                                             Hint
                                         </th>
-                                        <th scope="col" className="text-center" style={{width: '150px'}}>
+                                        <th scope="col" className="text-center" style={{width: '120px'}}>
                                             <i className="bi bi-gear me-2"></i>
-                                            Operations
+                                            Actions
                                         </th>
                                     </tr>
                                     </thead>
@@ -418,28 +497,28 @@ function WordsPage({ showError }) {
                                     {filteredWords.map((word, index) => (
                                         <tr key={`${word.category}-${word.word}`}>
 
-                                            {/* category */}
+                                            {/* קטגוריה */}
                                             <td>
-                          <span className="badge bg-secondary fs-6">
-                            {word.category}
-                          </span>
+                                                <span className="badge bg-secondary fs-6">
+                                                    {word.category}
+                                                </span>
                                             </td>
 
-                                            {/* word */}
+                                            {/* מילה */}
                                             <td>
-                          <span className="fw-bold text-primary fs-5" style={{direction: 'ltr'}}>
-                            {word.word}
-                          </span>
+                                                <span className="fw-bold text-primary fs-5" style={{direction: 'ltr'}}>
+                                                    {word.word}
+                                                </span>
                                             </td>
 
-                                            {/* hint */}
+                                            {/* רמז */}
                                             <td>
-                          <span className="text-muted">
-                            {word.hint}
-                          </span>
+                                                <span className="text-muted">
+                                                    {word.hint}
+                                                </span>
                                             </td>
 
-                                            {/* Operations */}
+                                            {/* פעולות */}
                                             <td className="text-center">
                                                 <div className="btn-group btn-group-sm" role="group">
                                                     <button
@@ -447,6 +526,7 @@ function WordsPage({ showError }) {
                                                         className="btn btn-outline-warning"
                                                         onClick={() => startEditing(word)}
                                                         title="Edit"
+                                                        disabled={api.loading}
                                                     >
                                                         <i className="bi bi-pencil"></i>
                                                     </button>
@@ -456,6 +536,7 @@ function WordsPage({ showError }) {
                                                         className="btn btn-outline-danger"
                                                         onClick={() => handleDeleteWord(word)}
                                                         title="Delete"
+                                                        disabled={api.loading}
                                                     >
                                                         <i className="bi bi-trash"></i>
                                                     </button>
@@ -466,25 +547,57 @@ function WordsPage({ showError }) {
                                     </tbody>
                                 </table>
                             </div>
+
+                            {/* כותרת תחתונה עם סטטיסטיקות */}
+                            <div className="card-footer bg-light">
+                                <div className="row text-center">
+                                    <div className="col-md-3">
+                                        <small className="text-muted">
+                                            <i className="bi bi-list-ul me-1"></i>
+                                            Total Words: <strong>{words.length}</strong>
+                                        </small>
+                                    </div>
+                                    <div className="col-md-3">
+                                        <small className="text-muted">
+                                            <i className="bi bi-funnel me-1"></i>
+                                            Filtered: <strong>{filteredWords.length}</strong>
+                                        </small>
+                                    </div>
+                                    <div className="col-md-3">
+                                        <small className="text-muted">
+                                            <i className="bi bi-tags me-1"></i>
+                                            Categories: <strong>{categories.length}</strong>
+                                        </small>
+                                    </div>
+                                    <div className="col-md-3">
+                                        <small className="text-muted">
+                                            <i className="bi bi-percent me-1"></i>
+                                            Showing: <strong>{words.length > 0 ? Math.round((filteredWords.length / words.length) * 100) : 0}%</strong>
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     )}
                 </div>
-
-                {wordToDelete && (
-                    <ConfirmModal
-                        message={`Are you sure you want to delete the word "${wordToDelete.word}" from the category "${wordToDelete.category}"?`}
-                        onConfirm={confirmDeleteWord}
-                        onCancel={cancelDeleteWord}
-                    />
-                )}
-
-                <SuccessModal
-                    show={showSuccessModal}
-                    onClose={() => setShowSuccessModal(false)}
-                    message={successMessage}
-                />
-
             </div>
+
+            {/* Modal אישור מחיקה */}
+            {wordToDelete && (
+                <ConfirmModal
+                    message={`Are you sure you want to delete the word "${wordToDelete.word}" from the category "${wordToDelete.category}"?`}
+                    onConfirm={confirmDeleteWord}
+                    onCancel={cancelDeleteWord}
+                />
+            )}
+
+            {/* Modal הצלחה */}
+            <SuccessModal
+                show={showSuccessModal}
+                onClose={() => setShowSuccessModal(false)}
+                message={successMessage}
+            />
+
         </div>
     );
 }

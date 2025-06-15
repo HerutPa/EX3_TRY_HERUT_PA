@@ -1,19 +1,22 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import ConfirmModal from '../components/modals/ConfirmModal';
+import useGameTimer from '../hooks/useGameTimer';
+import useApi from '../hooks/useApi';
 
 /**
- * Main game page
- * Displays the hidden word, allows guessing, timer and more
+ * Main game page - עם Custom Hooks
+ * משתמש ב-useGameTimer לניהול הזמן ו-useApi לשמירת תוצאות
  */
 function GamePage({ showError, clearError }) {
     const location = useLocation();
     const navigate = useNavigate();
+    const api = useApi();
 
-    // Game data from the homepage
+    // נתוני משחק מדף הבית
     const gameData = location.state;
 
-    // If there is no game data - return to the home page
+    // בדיקה שיש נתוני משחק
     useEffect(() => {
         if (!gameData || !gameData.word) {
             if (showError) {
@@ -23,42 +26,36 @@ function GamePage({ showError, clearError }) {
         }
     }, [gameData, navigate, showError]);
 
-    // Game State
+    // נתוני משחק בסיסיים
     const [targetWord] = useState(gameData?.word?.toLowerCase() || '');
     const [hint] = useState(gameData?.hint || '');
     const [category] = useState(gameData?.category || '');
     const [nickname] = useState(gameData?.nickname || '');
 
-    // game progress State
+    // מצב התקדמות המשחק
     const [guessedLetters, setGuessedLetters] = useState(new Set());
     const [currentGuess, setCurrentGuess] = useState('');
     const [attempts, setAttempts] = useState(0);
-    const [gameStartTime] = useState(Date.now());
-    const [gameTime, setGameTime] = useState(0);
     const [gameStatus, setGameStatus] = useState('playing'); // 'playing', 'won', 'saving', 'saved'
     const [usedHint, setUsedHint] = useState(false);
     const [showHint, setShowHint] = useState(false);
     const [savedScore, setSavedScore] = useState(null);
 
-    // UI State
+    // מצב UI
     const [inputMode, setInputMode] = useState('letter'); // 'letter' / 'word'
     const [showConfirmModal, setShowConfirmModal] = useState(false);
 
-    /**
-     * Update game clock every second
-     */
-    useEffect(() => {
-        if (gameStatus === 'playing') {
-            const timer = setInterval(() => {
-                setGameTime(Math.floor((Date.now() - gameStartTime) / 1000));
-            }, 1000);
-
-            return () => clearInterval(timer);
-        }
-    }, [gameStatus, gameStartTime]);
+    // שימוש ב-useGameTimer Custom Hook
+    const gameStartTime = Date.now();
+    const {
+        gameTime,
+        formatTime,
+        stopTimer,
+        calculateTimePenalty
+    } = useGameTimer(gameStatus === 'playing', gameStartTime);
 
     /**
-     * Auto-save score when game is won
+     * שמירה אוטומטית של התוצאה כאשר המשחק מסתיים
      */
     useEffect(() => {
         if (gameStatus === 'won') {
@@ -67,7 +64,7 @@ function GamePage({ showError, clearError }) {
     }, [gameStatus]);
 
     /**
-     * Calculate the displayed word with guessed letters
+     * חישוב המילה המוצגת עם האותיות שנוחשו
      */
     const getDisplayWord = () => {
         return targetWord
@@ -77,19 +74,18 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Checking whether the guess is correct
+     * בדיקה האם הניחוש תקין
      */
     const isValidGuess = (guess) => {
         return guess && /^[a-zA-Z]+$/.test(guess);
     };
 
     /**
-     * Handling single letter guessing
+     * טיפול בניחוש אות בודדת
      */
     const handleLetterGuess = (letter) => {
         const lowerLetter = letter.toLowerCase();
 
-        // Check that the letter is not already guessed
         if (guessedLetters.has(lowerLetter)) {
             if (showError) {
                 showError(`The letter "${letter}" has already been guessed!`);
@@ -97,12 +93,11 @@ function GamePage({ showError, clearError }) {
             return;
         }
 
-        // Add the letter to the guess list
         const newGuessedLetters = new Set([...guessedLetters, lowerLetter]);
         setGuessedLetters(newGuessedLetters);
         setAttempts(prev => prev + 1);
 
-        // Checking if the word is complete
+        // בדיקה האם המילה הושלמה
         const wordCompleted = targetWord.split('').every(letter => newGuessedLetters.has(letter));
         if (wordCompleted) {
             setGameStatus('won');
@@ -110,19 +105,16 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Whole word guessing treatment
+     * טיפול בניחוש מילה שלמה
      */
     const handleWordGuess = (word) => {
         const lowerWord = word.toLowerCase().trim();
         setAttempts(prev => prev + 1);
 
         if (lowerWord === targetWord) {
-            // Correct guess - the word is guessed!
             setGameStatus('won');
-            // Adding all letters to the display
             setGuessedLetters(new Set(targetWord.split('')));
         } else {
-            // Wrong guess
             if (showError) {
                 showError(`The word "${word}" is incorrect, try again.`);
             }
@@ -130,30 +122,20 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Handle key press to prevent space in letter mode
+     * טיפול בלחיצת מקש למניעת רווחים
      */
     const handleKeyPress = (e) => {
-        // Prevent space in letter mode
-        if (inputMode === 'letter' && e.key === ' ') {
+        if (e.key === ' ') {
             e.preventDefault();
             if (showError) {
-                showError('Spaces are not allowed when guessing letters. Please enter only English letters.');
-            }
-            return;
-        }
-
-        // Prevent space in word mode (words shouldn't contain spaces)
-        if (inputMode === 'word' && e.key === ' ') {
-            e.preventDefault();
-            if (showError) {
-                showError('Spaces are not allowed in words. Please enter only English letters.');
+                showError('Spaces are not allowed. Please enter only English letters.');
             }
             return;
         }
     };
 
     /**
-     * Clear errors when user interacts with the game
+     * ניקוי שגיאות כשהמשתמש מתחיל לפעול
      */
     const clearErrorsOnInteraction = () => {
         if (clearError) {
@@ -162,15 +144,11 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Handle input change with validation
+     * טיפול בשינוי ה-input עם אימות
      */
     const handleInputChange = (e) => {
-        // Clear errors when user starts typing
         clearErrorsOnInteraction();
-
         const value = e.target.value;
-
-        // Remove any spaces that might have been pasted
         const cleanValue = value.replace(/\s/g, '');
 
         if (value !== cleanValue && showError) {
@@ -181,12 +159,10 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Handling of sending a guess
+     * טיפול בשליחת ניחוש
      */
     const handleSubmitGuess = (e) => {
         e.preventDefault();
-
-        // Clear previous errors when attempting new submission
         clearErrorsOnInteraction();
 
         if (!currentGuess.trim() || !isValidGuess(currentGuess)) {
@@ -213,15 +189,18 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Auto-save score when game is won
+     * שמירה אוטומטית של התוצאה עם useApi
      */
     const handleAutoSaveScore = async () => {
         try {
             setGameStatus('saving');
 
+            // עצירת הטיימר וקבלת הזמן הסופי
+            const finalTime = stopTimer();
+
             const gameResult = {
                 nickname,
-                gameTimeSeconds: gameTime,
+                gameTimeSeconds: finalTime,
                 attemptCount: attempts,
                 usedHint,
                 category,
@@ -229,20 +208,9 @@ function GamePage({ showError, clearError }) {
                 won: true
             };
 
-            // Sending the result to the server
-            const response = await fetch('http://localhost:8080/api/scores', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(gameResult),
-            });
+            // שליחת התוצאה לשרת עם useApi
+            const scoreData = await api.post('http://localhost:8080/api/scores', gameResult);
 
-            if (!response.ok) {
-                throw new Error('The result cannot be saved.');
-            }
-
-            const scoreData = await response.json();
             setSavedScore(scoreData);
             setGameStatus('saved');
 
@@ -251,12 +219,12 @@ function GamePage({ showError, clearError }) {
             if (showError) {
                 showError('The game has ended but the result cannot be saved. Please check the connection to the server.');
             }
-            setGameStatus('saved'); // Continue anyway
+            setGameStatus('saved'); // ממשיכים בכל מקרה
         }
     };
 
     /**
-     * Showing a hint (with a penalty on the score)
+     * הצגת רמז (עם קנס בניקוד)
      */
     const handleShowHint = () => {
         clearErrorsOnInteraction();
@@ -265,7 +233,7 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Leaving the game and returning to the home page
+     * יציאה מהמשחק וחזרה לדף הבית
      */
     const handleQuitGame = () => {
         clearErrorsOnInteraction();
@@ -282,7 +250,7 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Go to leaderboard with saved result
+     * מעבר ללוח התוצאות עם התוצאה השמורה
      */
     const handleViewLeaderboard = () => {
         navigate('/leaderboard', {
@@ -294,22 +262,13 @@ function GamePage({ showError, clearError }) {
     };
 
     /**
-     * Start a new game
+     * התחלת משחק חדש
      */
     const handleNewGame = () => {
         navigate('/');
     };
 
-    /**
-     * Game time design
-     */
-    const formatTime = () => {
-        const minutes = Math.floor(gameTime / 60);
-        const seconds = gameTime % 60;
-        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-    };
-
-    // If there is no game data - nothing is displayed
+    // אם אין נתוני משחק - לא מציגים כלום
     if (!gameData) {
         return (
             <div className="container py-5 text-center">
@@ -324,7 +283,7 @@ function GamePage({ showError, clearError }) {
             <div className="row justify-content-center">
                 <div className="col-lg-8">
 
-                    {/* Top information panel */}
+                    {/* פאנל מידע עליון */}
                     <div className="card shadow mb-4">
                         <div className="card-header bg-primary text-white">
                             <div className="row align-items-center text-center">
@@ -356,10 +315,11 @@ function GamePage({ showError, clearError }) {
                         </div>
                     </div>
 
-                    {/* Word display */}
+                    {/* תצוגת המילה */}
                     <div className="card shadow mb-4">
                         <div className="card-body text-center py-5">
-                            <h1 className="display-3 fw-bold text-primary mb-4" style={{letterSpacing: '0.5rem', fontFamily: 'monospace'}}>
+                            <h1 className="display-3 fw-bold text-primary mb-4"
+                                style={{letterSpacing: '0.5rem', fontFamily: 'monospace'}}>
                                 {getDisplayWord()}
                             </h1>
 
@@ -404,7 +364,7 @@ function GamePage({ showError, clearError }) {
 
                     {gameStatus === 'playing' && (
                         <>
-                            {/* Guessing panel */}
+                            {/* פאנל ניחושים */}
                             <div className="card shadow mb-4">
                                 <div className="card-header">
                                     <h5 className="card-title mb-0">
@@ -413,8 +373,7 @@ function GamePage({ showError, clearError }) {
                                     </h5>
                                 </div>
                                 <div className="card-body">
-
-                                    {/* Choosing a guess type */}
+                                    {/* בחירת סוג ניחוש */}
                                     <div className="btn-group mb-3 w-100" role="group">
                                         <input
                                             type="radio"
@@ -443,7 +402,7 @@ function GamePage({ showError, clearError }) {
                                         </label>
                                     </div>
 
-                                    {/* Guess form */}
+                                    {/* טופס ניחוש */}
                                     <form onSubmit={handleSubmitGuess}>
                                         <div className="input-group">
                                             <input
@@ -474,12 +433,11 @@ function GamePage({ showError, clearError }) {
                                 </div>
                             </div>
 
-                            {/* Actions panel */}
+                            {/* פאנל פעולות */}
                             <div className="card shadow mb-4">
                                 <div className="card-body">
                                     <div className="row g-3">
-
-                                        {/* Hint button */}
+                                        {/* כפתור רמז */}
                                         <div className="col-md-4">
                                             {!showHint ? (
                                                 <button
@@ -498,7 +456,7 @@ function GamePage({ showError, clearError }) {
                                             )}
                                         </div>
 
-                                        {/* Exit button */}
+                                        {/* כפתור יציאה */}
                                         <div className="col-md-4">
                                             <button
                                                 type="button"
@@ -510,7 +468,7 @@ function GamePage({ showError, clearError }) {
                                             </button>
                                         </div>
 
-                                        {/* Go to the leaderboard */}
+                                        {/* מעבר ללוח התוצאות */}
                                         <div className="col-md-4">
                                             <button
                                                 type="button"
@@ -525,7 +483,7 @@ function GamePage({ showError, clearError }) {
                                 </div>
                             </div>
 
-                            {/* Guessed letters */}
+                            {/* אותיות שנוחשו */}
                             {guessedLetters.size > 0 && (
                                 <div className="card shadow">
                                     <div className="card-header">
@@ -556,7 +514,7 @@ function GamePage({ showError, clearError }) {
                         </>
                     )}
 
-                    {/* Game completed buttons */}
+                    {/* כפתורי משחק שהסתיים */}
                     {gameStatus === 'saved' && (
                         <div className="text-center">
                             <div className="btn-group" role="group">
@@ -581,18 +539,10 @@ function GamePage({ showError, clearError }) {
                         </div>
                     )}
 
-                    {/* Confirm Modal */}
+                    {/* Modal אישור */}
                     {showConfirmModal && (
                         <ConfirmModal
-                            title="Exit Game"
                             message="The score will not be saved."
-                            confirmText="Yes, Exit Game"
-                            cancelText="No, Continue Game"
-                            confirmIcon="bi-door-open"
-                            cancelIcon="bi-x-lg"
-                            headerIcon="bi-exclamation-triangle"
-                            bodyIcon="bi-door-open"
-                            showSubMessage={true}
                             onConfirm={confirmQuit}
                             onCancel={cancelQuit}
                         />
